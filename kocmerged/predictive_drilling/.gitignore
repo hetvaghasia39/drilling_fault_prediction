@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+venv/
+env/
+data/venv/
+
+# Large Data
+3w/data/
+data/
+*.csv
+*.parquet
+*.zip
+
+# Logs
+*.log
+ngrok.log
+
+# IDE
+.vscode/
+.idea/
+
+# Mac
+.DS_Store

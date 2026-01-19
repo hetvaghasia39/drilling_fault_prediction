@@ -1,0 +1,23 @@
+# Virtual environments
+.venv/
+venv/
+**/venv/
+**/__pycache__/
+*.pyc
+
+# Datasets
+dataset/
+kocmerged/predictive_drilling/data/
+kocmerged/predictive_drilling/3w/data/raw/
+*.csv
+*.parquet
+*.h5
+*.pkl
+*.joblib
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
