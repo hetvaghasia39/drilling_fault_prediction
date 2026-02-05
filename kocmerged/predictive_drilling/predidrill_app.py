@@ -6,8 +6,15 @@ import time
 import os
 import math
 import altair as alt
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import MinMaxScaler
+import datetime
+# Import our new helper
+try:
+    from drill_helper import StreamlitDrillSimulator
+except ImportError:
+    # Handle case where runpy might mess up imports
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    from drill_helper import StreamlitDrillSimulator
 
 # --- Configuration & Styling ---
 # --- Configuration & Styling ---
@@ -46,46 +53,47 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- Data & Model Loading (Cached) ---
-@st.cache_resource
-def load_data_and_model():
-    base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
-    log_path = os.path.join(base_dir, 'drilling_log.csv')
-    xai_path = os.path.join(base_dir, 'xai_drilling.csv')
+# The StreamlitDrillSimulator now handles data and model loading internally.
+# @st.cache_resource
+# def load_data_and_model():
+#     base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+#     log_path = os.path.join(base_dir, 'drilling_log.csv')
+#     xai_path = os.path.join(base_dir, 'xai_drilling.csv')
     
-    # Load Data
-    xai_df = pd.read_csv(xai_path)
-    log_df = pd.read_csv(log_path)
+#     # Load Data
+#     xai_df = pd.read_csv(xai_path)
+#     log_df = pd.read_csv(log_path)
     
-    # --- Feature Selection & Mapping ---
-    xai_features = ['Spindle speed n [1/min]', 'Feed rate vf [mm/min]', 'Power Pc [kW]']
-    xai_target = 'Main Failure'
-    log_features = ['SURF_RPM', 'ROP_AVG', 'WOB'] 
+#     # --- Feature Selection & Mapping ---
+#     xai_features = ['Spindle speed n [1/min]', 'Feed rate vf [mm/min]', 'Power Pc [kW]']
+#     xai_target = 'Main Failure'
+#     log_features = ['SURF_RPM', 'ROP_AVG', 'WOB'] 
 
-    # Clean Data
-    xai_df = xai_df.dropna(subset=xai_features + [xai_target])
-    log_df_clean = log_df.copy()
-    for col in log_features:
-        log_df_clean[col] = log_df_clean[col].fillna(log_df_clean[col].mean())
+#     # Clean Data
+#     xai_df = xai_df.dropna(subset=xai_features + [xai_target])
+#     log_df_clean = log_df.copy()
+#     for col in log_features:
+#         log_df_clean[col] = log_df_clean[col].fillna(log_df_clean[col].mean())
 
-    # Scaling
-    scaler_xai = MinMaxScaler()
-    X_xai_scaled = scaler_xai.fit_transform(xai_df[xai_features])
+#     # Scaling
+#     scaler_xai = MinMaxScaler()
+#     X_xai_scaled = scaler_xai.fit_transform(xai_df[xai_features])
     
-    scaler_log = MinMaxScaler()
-    scaler_log.fit(log_df_clean[log_features])
+#     scaler_log = MinMaxScaler()
+#     scaler_log.fit(log_df_clean[log_features])
 
-    # Train Model
-    clf = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
-    clf.fit(X_xai_scaled, xai_df[xai_target])
+#     # Train Model
+#     clf = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
+#     clf.fit(X_xai_scaled, xai_df[xai_target])
     
-    return clf, scaler_log, log_df_clean, log_features
+#     return clf, scaler_log, log_df_clean, log_features
 
-model, scaler, log_data, log_features = load_data_and_model()
+# model, scaler, log_data, log_features = load_data_and_model()
 
-# Pre-calculate Predictions
-X_log_scaled = scaler.transform(log_data[log_features])
-probs = model.predict_proba(X_log_scaled)[:, 1]
-log_data['Failure_Prob'] = probs
+# # Pre-calculate Predictions
+# X_log_scaled = scaler.transform(log_data[log_features])
+# probs = model.predict_proba(X_log_scaled)[:, 1]
+# log_data['Failure_Prob'] = probs
 
 # --- Physics Engine (Von Mises) ---
 PIPE_PROPS = {
@@ -154,26 +162,37 @@ if mode == "Tripping Out (Physics)":
     pipe_grade = st.sidebar.selectbox("API Grade", list(PIPE_PROPS.keys()), index=2) # Default G-105
     st.sidebar.info(f"Yield Strength: {PIPE_PROPS[pipe_grade]:,} psi")
 
-import datetime
 
 # --- State Management ---
 if 'active' not in st.session_state:
     st.session_state.active = False
-if 'current_idx' not in st.session_state:
-    st.session_state.current_idx = 0
 if 'trip_depth' not in st.session_state:
     st.session_state.trip_depth = 0.0
 if 'drill_history' not in st.session_state:
     st.session_state.drill_history = []
+if 'simulator' not in st.session_state:
+    st.session_state.simulator = StreamlitDrillSimulator()
 
 def toggle_simulation():
     st.session_state.active = not st.session_state.active
     # If starting tripping, init depth
     if mode == "Tripping Out (Physics)" and st.session_state.active:
-        st.session_state.trip_depth = log_data['Depth'].max()
+        # Reset trip depth if needed, or use a default
+        if st.session_state.trip_depth <= 0:
+            st.session_state.trip_depth = 10000.0 # Default depth
+
+def inject_fault():
+    if st.session_state.simulator.inject_fault():
+        st.toast("⚠️ Fault Injected! Monitoring for Pre-failure signs...", icon="🚨")
+    else:
+        st.error("Could not find fault files.")
 
 btn_label = "⏹ Stop" if st.session_state.active else "▶ Start"
 st.sidebar.button(btn_label, on_click=toggle_simulation, type="primary")
+
+if mode == "Drilling (Predictive)":
+    if st.sidebar.button("🚨 Inject Fault (Simulate)"):
+        inject_fault()
 
 # --- Main Dashboard ---
 # st.title("📡 PrediDrill AI Command Center") - Removed Title for cleaner dashboard look
@@ -233,47 +252,65 @@ status_color = "gray"
 reason = "Simulation Paused"
 status_css = "status-ok"
 display_risk = 0.0
+val1, val2, val3 = 0, 0, 0
+lbl1, lbl2, lbl3 = "N/A", "N/A", "N/A"
+chart_key = "Depth" # X-axis
 
+# --- PROCESS SIMULATION STEP ---
 if st.session_state.active:
     if mode == "Drilling (Predictive)":
-        if st.session_state.current_idx < len(log_data):
-            idx = st.session_state.current_idx
-            row = log_data.iloc[idx]
-            prob = row['Failure_Prob']
+        step_data = st.session_state.simulator.next_step()
+        
+        if step_data:
+            data = step_data['data']
+            prob = step_data['risk_prob']
+            pred = step_data['prediction']
+            sim_status = step_data['status']
+            
             display_risk = prob
             
-            if prob > 0.6:
-                status_text = "CRITICAL FAIL"
+            # Update Metrics
+            # Mapping: WOB -> P-TPT (Pressure?), ROP -> QGL (Flow?), RPM -> T-TPT (Temp?)
+            # Actually let's use the real labels
+            val1 = data.get('P-TPT', 0)
+            lbl1 = "P-TPT (Pressure)"
+            val2 = data.get('QGL', 0)
+            lbl2 = "QGL (Flow)"
+            val3 = data.get('T-TPT', 0)
+            lbl3 = "T-TPT (Temp)"
+            
+            # Status Logic
+            if pred == 1:
+                status_text = "CRITICAL RISK"
                 status_css = "status-crit"
-                reason = "Model High Probability"
-            elif row['WOB'] > 80000:
-                status_text = "OVERLOAD"
-                status_css = "status-crit"
-                reason = "Excessive WOB"
-            elif row['WOB'] > 45000 and row['ROP_AVG'] < 0.005:
-                status_text = "BIT BALLING"
+                reason = "Predictive Model Alert"
+            elif prob > 0.5:
+                status_text = "WARNING"
                 status_css = "status-warn"
-                reason = "Low ROP Risk"
+                reason = "Elevated Risk Probability"
+            elif sim_status == "FAULT_INJECTED":
+                status_text = "FAULT INJECTED"
+                status_css = "status-warn"
+                reason = "Simulated Fault Active"
             else:
-                 status_text = "NORMAL"
-                 status_css = "status-ok"
-                 reason = "Optimal Drilling"
+                status_text = "NORMAL"
+                status_css = "status-ok"
+                reason = f"Source: {step_data['file'][:15]}..."
 
             # History
             timestamp = datetime.datetime.now().strftime("%H:%M:%S")
             log_entry = {
                 "Time": timestamp,
-                "Depth": f"{row['Depth']:.1f}",
-                "WOB": f"{row['WOB']:.0f}",
                 "Risk": f"{prob:.1%}",
+                "P-TPT": f"{val1:.0f}",
                 "Status": status_text
             }
-            if st.session_state.active:
-                 st.session_state.drill_history.insert(0, log_entry)
-
-            # Advance
-            st.session_state.current_idx += 1
+            st.session_state.drill_history.insert(0, log_entry)
             
+            # Keep history manageable
+            if len(st.session_state.drill_history) > 50:
+                 st.session_state.drill_history.pop()
+
     elif mode == "Tripping Out (Physics)":
         if st.session_state.trip_depth > 0:
              current_depth = st.session_state.trip_depth
@@ -286,6 +323,13 @@ if st.session_state.active:
              
              display_risk = max(pct_tension, pct_torque)
              
+             val1 = tension_lbs
+             lbl1 = "Hook Load (lbs)"
+             val2 = torque_ftlbs
+             lbl2 = "Torque (ft-lbs)"
+             val3 = current_depth
+             lbl3 = "Depth (ft)"
+
              if is_breakage:
                  status_text = "FAILURE"
                  status_css = "status-crit"
@@ -347,24 +391,29 @@ with col_main:
     
     if mode == "Drilling (Predictive)":
         st.markdown('<div class="card-header">Drilling Risk Telemetry</div>', unsafe_allow_html=True)
-        # Show recent history
-        idx = st.session_state.current_idx
-        chart_df = log_data.iloc[max(0, idx-100):idx+1]
-        
-        c = alt.Chart(chart_df).mark_area(
-            line={'color':'#2196F3'},
-            color=alt.Gradient(
-                gradient='linear',
-                stops=[alt.GradientStop(color='#2196F3', offset=0),
-                       alt.GradientStop(color='rgba(33, 150, 243, 0)', offset=1)],
-                x1=1, x2=1, y1=1, y2=0
-            )
-        ).encode(
-            x='Depth',
-            y='Failure_Prob',
-            tooltip=['Depth', 'Failure_Prob']
-        ).properties(height=300)
-        st.altair_chart(c, use_container_width=True)
+        # Plot Risk History
+        if st.session_state.drill_history:
+             hist_df = pd.DataFrame(st.session_state.drill_history).iloc[::-1] # Reverse to chrono
+             # Ensure numeric
+             hist_df['RiskVal'] = hist_df['Risk'].str.rstrip('%').astype(float) / 100.0
+             hist_df['Index'] = range(len(hist_df))
+             
+             c = alt.Chart(hist_df).mark_area(
+                line={'color':'#2196F3'},
+                color=alt.Gradient(
+                    gradient='linear',
+                    stops=[alt.GradientStop(color='#2196F3', offset=0),
+                           alt.GradientStop(color='rgba(33, 150, 243, 0)', offset=1)],
+                    x1=1, x2=1, y1=1, y2=0
+                )
+            ).encode(
+                x='Index',
+                y='RiskVal',
+                tooltip=['Time', 'Risk', 'Status']
+            ).properties(height=300)
+             st.altair_chart(c, use_container_width=True)
+        else:
+             st.info("Start simulation to generate telemetry.")
 
     else:
         st.markdown('<div class="card-header">Tripping Loads Safety Envelope</div>', unsafe_allow_html=True)
@@ -394,25 +443,6 @@ with col_main:
     # 2. Key Metrics
     m1, m2, m3, m4 = st.columns(4)
     
-    val1, val2, val3 = 0, 0, 0
-    lbl1, lbl2, lbl3 = "N/A", "N/A", "N/A"
-    
-    if mode == "Drilling (Predictive)" and st.session_state.current_idx > 0:
-        curr_row = log_data.iloc[st.session_state.current_idx - 1]
-        val1 = curr_row['WOB']
-        lbl1 = "Weight on Bit (lbs)"
-        val2 = curr_row['ROP_AVG']
-        lbl2 = "ROP (ft/hr)"
-        val3 = curr_row['SURF_RPM']
-        lbl3 = "Surface RPM"
-    elif mode == "Tripping Out (Physics)" and 'tension_lbs' in locals():
-        val1 = tension_lbs
-        lbl1 = "Hook Load (lbs)"
-        val2 = torque_ftlbs
-        lbl2 = "Torque (ft-lbs)"
-        val3 = current_depth
-        lbl3 = "Depth (ft)"
-
     with m1:
          st.markdown(f"""
         <div class="dashboard-card" style="text-align: center;">
