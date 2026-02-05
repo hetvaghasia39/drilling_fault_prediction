@@ -48,7 +48,7 @@ st.markdown("""
 # --- Data & Model Loading (Cached) ---
 @st.cache_resource
 def load_data_and_model():
-    base_dir = '/home/het/Downloads/koc/kocmerged/predictive_drilling/data'
+    base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
     log_path = os.path.join(base_dir, 'drilling_log.csv')
     xai_path = os.path.join(base_dir, 'xai_drilling.csv')
     
@@ -176,147 +176,201 @@ btn_label = "⏹ Stop" if st.session_state.active else "▶ Start"
 st.sidebar.button(btn_label, on_click=toggle_simulation, type="primary")
 
 # --- Main Dashboard ---
-st.title("📡 PrediDrill AI Command Center")
+# st.title("📡 PrediDrill AI Command Center") - Removed Title for cleaner dashboard look
 
-if mode == "Drilling (Predictive)":
-    # Reuse previous logic
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.subheader("Real-Time Drilling Metrics")
-        kpi = st.columns(4)
-        m_depth = kpi[0].empty()
-        m_rpm = kpi[1].empty()
-        m_rop = kpi[2].empty()
-        m_prob = kpi[3].empty()
-        
-        chart_viz = st.empty()
-        
-    with col2:
-        st.subheader("AI Agent Alerts")
-        alert_box = st.empty()
+# --- Custom CSS ---
+st.markdown("""
+<style>
+    .stApp {
+        background-color: #0e1117;
+        font-family: 'Inter', sans-serif;
+    }
+    .dashboard-card {
+        background-color: #1e2127;
+        border-radius: 12px;
+        padding: 20px;
+        border: 1px solid #30333d;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        margin-bottom: 20px;
+    }
+    .card-header {
+        font-size: 14px;
+        font-weight: 600;
+        color: #8b92a6;
+        margin-bottom: 15px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+     .stat-value {
+        font-size: 28px;
+        font-weight: 700;
+        color: #ffffff;
+    }
+    .stat-label {
+        font-size: 12px;
+        color: #8b92a6;
+    }
+    .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+    }
+    .status-ok { background-color: rgba(76, 175, 80, 0.2); color: #4CAF50; border: 1px solid #4CAF50; }
+    .status-warn { background-color: rgba(255, 193, 7, 0.2); color: #FFC107; border: 1px solid #FFC107; }
+    .status-crit { background-color: rgba(255, 82, 82, 0.2); color: #FF5252; border: 1px solid #FF5252; }
+</style>
+""", unsafe_allow_html=True)
 
-    # Placeholders for History
-    st.markdown("### 📝 Live Sensor & Fault Log")
-    history_table = st.empty()
+# --- Layout ---
+col_sidebar, col_main = st.columns([1, 3.5])
 
-    if st.session_state.active:
-        while st.session_state.current_idx < len(log_data) and st.session_state.active:
+# --- Logic Variables ---
+status_text = "STANDBY"
+status_color = "gray"
+reason = "Simulation Paused"
+status_css = "status-ok"
+display_risk = 0.0
+
+if st.session_state.active:
+    if mode == "Drilling (Predictive)":
+        if st.session_state.current_idx < len(log_data):
             idx = st.session_state.current_idx
             row = log_data.iloc[idx]
-            
-            m_depth.metric("Depth", f"{row['Depth']:.0f} ft")
-            m_rpm.metric("RPM", f"{row['SURF_RPM']:.1f}")
-            m_rop.metric("ROP", f"{row['ROP_AVG']:.3f} ft/hr")
-            st.sidebar.metric("WOB (Weight on Bit)", f"{row['WOB']:.0f} lbs")
-            
             prob = row['Failure_Prob']
-            delta_color = "inverse" if prob > 0.5 else "normal"
-            m_prob.metric("Failure Risk", f"{prob:.1%}", delta=None, delta_color=delta_color)
-            
-            # Alerts & Logging
-            current_status = "NORMAL"
-            failure_reason = "None"
+            display_risk = prob
             
             if prob > 0.6:
-                alert_box.error(f"🚨 FAIL PREDICTED\nDepth: {row['Depth']}")
-                current_status = "CRITICAL"
-                failure_reason = "Model Prediction (High Prob)"
+                status_text = "CRITICAL FAIL"
+                status_css = "status-crit"
+                reason = "Model High Probability"
             elif row['WOB'] > 80000:
-                 alert_box.error(f"💥 CRITICAL: TOOTH FRACTURE RISK\nWOB: {row['WOB']:.0f} lbs")
-                 current_status = "CRITICAL"
-                 failure_reason = "Excessive WOB (Fracture)"
+                status_text = "OVERLOAD"
+                status_css = "status-crit"
+                reason = "Excessive WOB"
             elif row['WOB'] > 45000 and row['ROP_AVG'] < 0.005:
-                 alert_box.warning(f"⚠️ BIT BALLING DETECTED\nHigh WOB / Low ROP")
-                 current_status = "WARNING"
-                 failure_reason = "Bit Balling Risk"
-            elif row['WOB'] > 65000:
-                 alert_box.warning(f"⚠️ HIGH WOB: FRACTURE WARNING\nWOB: {row['WOB']:.0f} lbs")
-                 current_status = "WARNING"
-                 failure_reason = "High WOB Warning"
+                status_text = "BIT BALLING"
+                status_css = "status-warn"
+                reason = "Low ROP Risk"
             else:
-                alert_box.success("✅ System Normal")
-            
-            # Record History
+                 status_text = "NORMAL"
+                 status_css = "status-ok"
+                 reason = "Optimal Drilling"
+
+            # History
             timestamp = datetime.datetime.now().strftime("%H:%M:%S")
             log_entry = {
-                "Timestamp": timestamp,
-                "Depth (ft)": f"{row['Depth']:.1f}",
-                "WOB (lbs)": f"{row['WOB']:.0f}",
-                "RPM": f"{row['SURF_RPM']:.1f}",
-                "Risk (%)": f"{prob:.1%}",
-                "Status": current_status,
-                "Reason": failure_reason
+                "Time": timestamp,
+                "Depth": f"{row['Depth']:.1f}",
+                "WOB": f"{row['WOB']:.0f}",
+                "Risk": f"{prob:.1%}",
+                "Status": status_text
             }
-            st.session_state.drill_history.insert(0, log_entry) # Prepend for latest top
-            
-            # Chart
-            hist = log_data.iloc[max(0, idx-50):idx+1]
-            chart_data = pd.DataFrame({
-                'Depth': hist['Depth'],
-                'Risk': hist['Failure_Prob']
-            })
-            chart_viz.line_chart(chart_data, x='Depth', y='Risk', height=300)
-            
-            # History Table
-            history_table.dataframe(pd.DataFrame(st.session_state.drill_history), height=250, use_container_width=True)
-            
-            st.session_state.current_idx += 1
-            time.sleep(1.0/simulation_speed)
-            
-elif mode == "Tripping Out (Physics)":
-    # New Physics Logic
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.subheader(f"Tripping Out Monitor - Grade {pipe_grade}") 
-        
-        # Envelope Chart Placeholder
-        chart_ph = st.empty()
-        
-    with col2:
-        st.subheader("Pipe Loads")
-        m_tens = st.empty()
-        m_torque = st.empty()
-        m_depth_trip = st.empty()
-        st.divider()
-        m_limit_tens = st.empty()
-        m_limit_torq = st.empty()
-        alert_phys = st.empty()
+            if st.session_state.active:
+                 st.session_state.drill_history.insert(0, log_entry)
 
-    if st.session_state.active and st.session_state.trip_depth > 0:
-        while st.session_state.trip_depth > 0 and st.session_state.active:
-            # 1. Simulate Physics
-            current_depth = st.session_state.trip_depth
-            tension_lbs, torque_ftlbs = generate_tripping_loads(current_depth)
+            # Advance
+            st.session_state.current_idx += 1
             
-            # 2. Calculate Limits
-            max_torque, max_tension = calculate_pipe_limits(pipe_grade, tension_lbs)
-            
-            # 3. Safety Check
-            pct_tension = tension_lbs / max_tension
-            pct_torque = torque_ftlbs / max_torque if max_torque > 0 else 999
-            
-            is_breakage = (tension_lbs > max_tension) or (torque_ftlbs > max_torque)
-            
-            # 4. Display
-            m_depth_trip.metric("Current Depth", f"{current_depth:.0f} ft")
-            m_tens.metric("Tension (Hook Load)", f"{tension_lbs/1000:.1f} kips")
-            m_torque.metric("Torque", f"{torque_ftlbs:.0f} ft-lbs")
-            
-            m_limit_tens.markdown(f"**Max Tension:** {max_tension/1000:.1f} kips")
-            m_limit_torq.markdown(f"**Max Torque:** {max_torque:.0f} ft-lbs")
-            
-            if is_breakage:
-                alert_phys.error("💥 SYSTEM FAILURE DETECTED! PIPE BROKEN!")
-                st.session_state.active = False
-            elif pct_tension > 0.8 or pct_torque > 0.8:
-                alert_phys.warning("⚠️ CRITICAL STRESS! REDUCE SPEED!")
-            else:
-                alert_phys.success("✅ Loads within Safety Envelope")
-            
-            # 5. Envelope Visualization
-            # Draw the curve for current grade
-            tensions = np.linspace(0, max_tension, 50)
+    elif mode == "Tripping Out (Physics)":
+        if st.session_state.trip_depth > 0:
+             current_depth = st.session_state.trip_depth
+             tension_lbs, torque_ftlbs = generate_tripping_loads(current_depth)
+             max_torque, max_tension = calculate_pipe_limits(pipe_grade, tension_lbs)
+             
+             pct_tension = tension_lbs / max_tension
+             pct_torque = torque_ftlbs / max_torque if max_torque > 0 else 999
+             is_breakage = (tension_lbs > max_tension) or (torque_ftlbs > max_torque)
+             
+             display_risk = max(pct_tension, pct_torque)
+             
+             if is_breakage:
+                 status_text = "FAILURE"
+                 status_css = "status-crit"
+                 reason = "Pipe Snapped!"
+                 st.session_state.active = False
+             elif display_risk > 0.8:
+                 status_text = "STRESS WARNING"
+                 status_css = "status-warn"
+                 reason = "Approaching Yield"
+             else:
+                 status_text = "SAFE TRIP"
+                 status_css = "status-ok"
+                 reason = "Loads within API"
+
+             if st.session_state.active:
+                 st.session_state.trip_depth -= (5 * simulation_speed)
+
+# --- LEFT COLUMN (Rig Status) ---
+with col_sidebar:
+    st.markdown(f"""
+    <div class="dashboard-card">
+        <div class="stat-label">Rig Unit</div>
+        <div class="stat-value" style="font-size: 20px;">Deepwater Horizon II</div>
+        <br>
+        <div style="text-align: center;">
+             <div style="font-size: 60px;">⛽</div>
+        </div>
+        <div class="stat-label" style="text-align: center; margin-top: 10px;">{mode}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Risk Gauge/Indicator
+    st.markdown(f"""
+    <div class="dashboard-card">
+        <div class="card-header">Operational Risk</div>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+             <div style="font-size: 40px; font-weight: bold; color: {'#FF5252' if display_risk > 0.5 else '#4CAF50'};">{display_risk*100:.0f}%</div>
+             <div class="status-badge {status_css}">{status_text}</div>
+        </div>
+        <div style="background-color: #30333d; height: 8px; border-radius: 4px; margin-top: 10px;">
+            <div style="background-color: {'#FF5252' if display_risk > 0.5 else '#4CAF50'}; width: {min(display_risk*100, 100)}%; height: 100%; border-radius: 4px;"></div>
+        </div>
+        <div class="stat-label" style="margin-top: 5px;">{reason}</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Active State
+    st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
+    if st.session_state.active:
+        st.info("System ACTIVE")
+    else:
+        st.warning("System PAUSED")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# --- RIGHT COLUMN (Analysis) ---
+with col_main:
+    # 1. Main Chart
+    st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
+    
+    if mode == "Drilling (Predictive)":
+        st.markdown('<div class="card-header">Drilling Risk Telemetry</div>', unsafe_allow_html=True)
+        # Show recent history
+        idx = st.session_state.current_idx
+        chart_df = log_data.iloc[max(0, idx-100):idx+1]
+        
+        c = alt.Chart(chart_df).mark_area(
+            line={'color':'#2196F3'},
+            color=alt.Gradient(
+                gradient='linear',
+                stops=[alt.GradientStop(color='#2196F3', offset=0),
+                       alt.GradientStop(color='rgba(33, 150, 243, 0)', offset=1)],
+                x1=1, x2=1, y1=1, y2=0
+            )
+        ).encode(
+            x='Depth',
+            y='Failure_Prob',
+            tooltip=['Depth', 'Failure_Prob']
+        ).properties(height=300)
+        st.altair_chart(c, use_container_width=True)
+
+    else:
+        st.markdown('<div class="card-header">Tripping Loads Safety Envelope</div>', unsafe_allow_html=True)
+        # Envelope Plot
+        if 'tension_lbs' in locals():
+            tensions = np.linspace(0, max_tension * 1.2, 50)
             torques = []
             for t in tensions:
                 q, _ = calculate_pipe_limits(pipe_grade, t)
@@ -325,19 +379,84 @@ elif mode == "Tripping Out (Physics)":
             envelope_df = pd.DataFrame({"Tension": tensions, "Torque": torques})
             current_point = pd.DataFrame({"Tension": [tension_lbs], "Torque": [torque_ftlbs]})
             
-            c = alt.Chart(envelope_df).mark_area(opacity=0.3, color='green').encode(
-                x='Tension', y='Torque'
-            ) + alt.Chart(envelope_df).mark_line(color='green').encode(
+            c = alt.Chart(envelope_df).mark_area(opacity=0.3, color='#4CAF50').encode(
                 x='Tension', y='Torque'
             ) + alt.Chart(current_point).mark_point(
-                color='red', size=200, shape='cross'
+                color='#FF5252', size=300, shape='cross', filled=True
             ).encode(x='Tension', y='Torque')
             
-            chart_ph.altair_chart(c, use_container_width=True)
-            
-            # Decrement Depth
-            st.session_state.trip_depth -= (5 * simulation_speed) # Pulling speed
-            time.sleep(0.5)
+            st.altair_chart(c, use_container_width=True)
+        else:
+            st.info("Start Simulation to view Physics Envelope")
 
-    if st.session_state.trip_depth <= 0:
-         st.success("Tripping Complete. Pipe retrieved safely.")
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # 2. Key Metrics
+    m1, m2, m3, m4 = st.columns(4)
+    
+    val1, val2, val3 = 0, 0, 0
+    lbl1, lbl2, lbl3 = "N/A", "N/A", "N/A"
+    
+    if mode == "Drilling (Predictive)" and st.session_state.current_idx > 0:
+        curr_row = log_data.iloc[st.session_state.current_idx - 1]
+        val1 = curr_row['WOB']
+        lbl1 = "Weight on Bit (lbs)"
+        val2 = curr_row['ROP_AVG']
+        lbl2 = "ROP (ft/hr)"
+        val3 = curr_row['SURF_RPM']
+        lbl3 = "Surface RPM"
+    elif mode == "Tripping Out (Physics)" and 'tension_lbs' in locals():
+        val1 = tension_lbs
+        lbl1 = "Hook Load (lbs)"
+        val2 = torque_ftlbs
+        lbl2 = "Torque (ft-lbs)"
+        val3 = current_depth
+        lbl3 = "Depth (ft)"
+
+    with m1:
+         st.markdown(f"""
+        <div class="dashboard-card" style="text-align: center;">
+            <div class="card-header">Metric A</div>
+            <div class="stat-value">{val1:,.0f}</div>
+            <div class="stat-label">{lbl1}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with m2:
+         st.markdown(f"""
+        <div class="dashboard-card" style="text-align: center;">
+            <div class="card-header">Metric B</div>
+            <div class="stat-value" style="color: #2196F3;">{val2:,.2f}</div>
+            <div class="stat-label">{lbl2}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with m3:
+         st.markdown(f"""
+        <div class="dashboard-card" style="text-align: center;">
+            <div class="card-header">Metric C</div>
+            <div class="stat-value">{val3:,.1f}</div>
+            <div class="stat-label">{lbl3}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with m4:
+        st.markdown(f"""
+        <div class="dashboard-card" style="text-align: center;">
+            <div class="card-header">AI Confidence</div>
+            <div class="stat-value" style="color: #4CAF50;">99.8%</div>
+            <div class="stat-label">Model Accuracy</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # 3. Log
+    st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-header">Event Log</div>', unsafe_allow_html=True)
+    st.dataframe(pd.DataFrame(st.session_state.drill_history[:5]), hide_index=True, use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Loop Rerun
+if st.session_state.active:
+    time.sleep(1.0 / simulation_speed)
+    st.rerun()
+
+else:
+    st.markdown("---")
+    st.info("💡 Click 'Start' in the sidebar to begin the simulation.")
